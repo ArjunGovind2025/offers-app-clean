@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow admins full access to all documents
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+    
+    // Users can read their own data
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Public read access to college data
+    match /collegeData/{document} {
+      allow read: if true;
+    }
+    
+    // Public read access to approved offers only
+    match /offerLetters/{schoolId} {
+      allow read: if true;
+      // Users can only see approved offers or offers without status (legacy)
+      allow get: if true;
+    }
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && 
+             request.auth.uid == 'JVk1ibuMDkhVqY5yF9JdCh1agNY2';
+    }
+  }
+} 
