@@ -6,9 +6,19 @@ const admin = require("./firebaseAdmin");
 
 const db = admin.firestore();
 
-// Use environment variable or fallback for Stripe key
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-const stripe = new Stripe(stripeSecretKey);
+// Use environment variable for Stripe key
+let stripeSecretKey;
+let stripe;
+
+try {
+  stripeSecretKey = functions.config().stripe.secret_key;
+  stripe = new Stripe(stripeSecretKey);
+} catch (error) {
+  console.error("Failed to initialize Stripe:", error);
+  // Fallback for development
+  stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  stripe = new Stripe(stripeSecretKey);
+}
 
 // Use this CORS middleware:
 const corsMiddleware = cors({ origin: true });
@@ -277,25 +287,62 @@ exports.stripeWebhook = webhookHandlerV1;
 /** -------------------------
  *  Purchase History Function
  * ------------------------ */
+/** -------------------------
+ *  Get Purchase History Function
+ * ------------------------ */
 const getPurchaseHistoryApp = express();
+
+// 1) Handle all OPTIONS preflight requests
+getPurchaseHistoryApp.options("*", corsMiddleware);
+
+// 2) Apply CORS to every route
 getPurchaseHistoryApp.use(corsMiddleware);
+
+// 3) Parse JSON
 getPurchaseHistoryApp.use(express.json());
+
+// Add a health check endpoint first
+getPurchaseHistoryApp.get("/", (req, res) => {
+  res.status(200).json({ status: "healthy", message: "getPurchaseHistory function is running" });
+});
 
 getPurchaseHistoryApp.post("/", async (req, res) => {
   try {
+    console.log("getPurchaseHistory called with body:", req.body);
+    
     const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, error: "User ID is required." });
+    if (!userId) {
+      console.log("No userId provided");
+      return res.status(400).json({ success: false, error: "User ID is required." });
+    }
 
+    console.log("Getting user document for userId:", userId);
+    
     // Get Stripe customer ID from Firestore
     const userRef = db.collection("users").doc(userId);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) return res.status(404).json({ success: false, error: "User not found." });
+    
+    if (!userDoc.exists) {
+      console.log("User document not found");
+      return res.status(404).json({ success: false, error: "User not found." });
+    }
 
-    const stripeCustomerId = userDoc.data().stripeCustomerId;
-    if (!stripeCustomerId) return res.status(200).json({ success: true, purchases: [] });
+    const userData = userDoc.data();
+    const stripeCustomerId = userData.stripeCustomerId;
+    
+    if (!stripeCustomerId) {
+      console.log("No Stripe customer ID found");
+      return res.status(200).json({ success: true, purchases: [] });
+    }
 
+    console.log("Fetching Stripe sessions for customer:", stripeCustomerId);
+    
     // Fetch Stripe checkout sessions (purchases)
-    const sessions = await stripe.checkout.sessions.list({ customer: stripeCustomerId, limit: 100 });
+    const sessions = await stripe.checkout.sessions.list({ 
+      customer: stripeCustomerId, 
+      limit: 100 
+    });
+    
     const purchases = sessions.data
       .filter(s => s.payment_status === "paid")
       .map(s => ({
@@ -307,11 +354,15 @@ getPurchaseHistoryApp.post("/", async (req, res) => {
         status: s.payment_status
       }));
 
+    console.log("Returning purchases:", purchases.length);
     res.status(200).json({ success: true, purchases });
   } catch (error) {
+    console.error("Error in getPurchaseHistory:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+exports.getPurchaseHistory = functions.https.onRequest(getPurchaseHistoryApp);
 
 /** -------------------------
  *  Setup Stripe Account Function

@@ -83,17 +83,26 @@ export default function TermsPage() {
             </ul>
           </section>
 
+          {/* New: Offer Letter Use and Review */}
+          <section>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">5a. Offer Letter Use, AI Processing, and Human Review</h2>
+            <p className="text-gray-700 leading-relaxed mb-3">
+              When you upload an offer letter, we use artificial intelligence (AI) to extract details and structure the information. After AI extraction, a member of our team reviews the extracted data to ensure accuracy and quality. <strong>No one outside our team is able to view your actual offer letter document.</strong> Your document is stored securely and is only accessed by authorized team members for the sole purpose of confirming the accuracy of the extracted data. We do not share your original offer letter with any third parties or make it publicly visible. Documents are retained securely and may be used to improve our analysis algorithms, but are never disclosed outside the review and verification process.
+            </p>
+          </section>
+
           <section>
             <h2 className="text-xl font-semibold text-gray-900 mb-3">6. Earnings and Payments</h2>
             <p className="text-gray-700 leading-relaxed mb-3">
               Users may earn money by contributing offer letter data. Payment terms:
             </p>
             <ul className="list-disc list-inside text-gray-700 space-y-1 ml-4">
-              <li>Earnings are calculated based on data quality and completeness</li>
               <li>Minimum payout thresholds apply</li>
               <li>Payments are processed through Stripe</li>
               <li>Users must complete Stripe onboarding to receive payments</li>
               <li>We reserve the right to modify payment rates and terms</li>
+              <li><strong>Fraud and Abuse:</strong> We retain the right to pause or withhold payments if we identify fraudulent behavior or abuse of the platform. Any attempt to submit false, manipulated, or duplicate offer letters may result in account suspension and forfeiture of earnings.</li>
+              <li><strong>Inactive Accounts:</strong> If your account or credits are not accessed or used for over one year, we reserve the right to pause your account and withhold further payments until you contact support to reactivate your account.</li>
             </ul>
           </section>
 

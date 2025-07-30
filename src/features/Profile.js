@@ -60,6 +60,22 @@ export default function ProfilePage() {
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [selectedSettingsSection, setSelectedSettingsSection] = useState(null); // 'billing' | 'payouts' | null
 
+  // Add state for userStatus and pendingMessage
+  const [userStatus, setUserStatus] = useState(null);
+  const [pendingMessage, setPendingMessage] = useState(null);
+  
+  // Add state for dismissed notifications
+  const [dismissedPayoutNotification, setDismissedPayoutNotification] = useState(false);
+
+  // Persist payout notification dismissal in localStorage
+  useEffect(() => {
+    if (lastPayoutStatus === 'pending' && lastPayoutAmount && lastPayoutDate) {
+      const key = `payout_dismissed_${lastPayoutAmount}_${lastPayoutDate}`;
+      const dismissed = localStorage.getItem(key);
+      setDismissedPayoutNotification(!!dismissed);
+    }
+  }, [lastPayoutStatus, lastPayoutAmount, lastPayoutDate]);
+
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -185,6 +201,10 @@ export default function ProfilePage() {
         setLastPayoutStatus(userData.lastPayoutStatus || null);
         setLastPayoutAmount(userData.lastPayoutAmount || null);
         setLastPayoutDate(userData.lastPayoutDate || null);
+
+        // Set userStatus and pendingMessage
+        setUserStatus(userData.userStatus || null);
+        setPendingMessage(userData.pendingMessage || null);
 
         // Fetch payout history
         await fetchPayoutHistory(uid);
@@ -506,6 +526,12 @@ export default function ProfilePage() {
   const handleInitiatePayout = async () => {
     setMessage(null);
 
+    // Check userStatus first
+    if (userStatus === 'pending') {
+      setMessage("Your account is currently under review. Please wait for approval before initiating payouts.");
+      return;
+    }
+
     if (credit <= 0) {
       setMessage("Insufficient credit to initiate payout.");
       return;
@@ -551,6 +577,14 @@ export default function ProfilePage() {
       console.error("Error initiating payout:", error);
       setMessage("An error occurred while initiating the payout.");
     }
+  };
+
+  const handleDismissPayoutNotification = () => {
+    if (lastPayoutStatus === 'pending' && lastPayoutAmount && lastPayoutDate) {
+      const key = `payout_dismissed_${lastPayoutAmount}_${lastPayoutDate}`;
+      localStorage.setItem(key, '1');
+    }
+    setDismissedPayoutNotification(true);
   };
 
   const getSAIForOffer = (offer) => {
@@ -690,8 +724,27 @@ export default function ProfilePage() {
         {/* Earnings Dashboard */}
         <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-2xl p-8 shadow-lg border border-white/50">
           <div className="text-center mb-8">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Earnings Dashboard</h2>
+            <h2 className="text-2xl font-bold mb-6">
+              <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Earnings Dashboard</span>
+            </h2>
             
+            {/* User Status Information */}
+            {userStatus === 'pending' && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 max-w-2xl mx-auto">
+                <div className="flex items-center">
+                  <svg className="w-5 h-5 text-red-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  <div className="text-left">
+                    <p className="text-sm font-medium text-red-800">Account Under Review</p>
+                    <p className="text-xs text-red-700">
+                      {pendingMessage || "Your account is currently under review. You cannot initiate payouts until your account is approved."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Payment Setup Information */}
             {paymentSetupStatus === 'pending' && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 max-w-2xl mx-auto">
@@ -722,7 +775,7 @@ export default function ProfilePage() {
             )}
             
             {/* Main Earnings Display */}
-            <div className="bg-white rounded-xl p-8 shadow-md mb-6 max-w-md mx-auto">
+            <div className="bg-white rounded-xl p-8 shadow-md mb-6 max-w-2xl mx-auto">
               <div className="flex items-center justify-center mb-4">
                 <div className="w-12 h-12 bg-gradient-to-r from-green-400 to-blue-500 rounded-full flex items-center justify-center mr-4">
                   <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
@@ -739,18 +792,29 @@ export default function ProfilePage() {
             </div>
 
             {/* Pending Payout Status */}
-            {lastPayoutStatus === 'pending' && lastPayoutAmount && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6 max-w-2xl mx-auto">
-                <div className="flex items-center">
-                  <svg className="w-5 h-5 text-yellow-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
-                  </svg>
-                  <div className="text-left">
-                    <p className="text-sm font-medium text-yellow-800">Payout Pending</p>
-                    <p className="text-xs text-yellow-700">
-                      Your ${lastPayoutAmount.toFixed(2)} payout is being processed. Funds typically arrive in 2-7 business days.
-                    </p>
+            {lastPayoutStatus === 'pending' && lastPayoutAmount && !dismissedPayoutNotification && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6 max-w-2xl mx-auto relative">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center">
+                    <svg className="w-5 h-5 text-yellow-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-left">
+                      <p className="text-sm font-medium text-yellow-800">Payout Pending</p>
+                      <p className="text-xs text-yellow-700">
+                        Your ${lastPayoutAmount.toFixed(2)} payout is being processed. Funds typically arrive in 2-7 business days.
+                      </p>
+                    </div>
                   </div>
+                  <button
+                    onClick={handleDismissPayoutNotification}
+                    className="text-yellow-600 hover:text-yellow-800 transition-colors duration-200 p-1"
+                    aria-label="Dismiss notification"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             )}
@@ -797,12 +861,17 @@ export default function ProfilePage() {
               )}
               <button
                 onClick={handleInitiatePayout}
-                className="px-6 py-4 bg-gradient-to-r from-green-500 to-teal-500 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200 flex items-center justify-center"
+                disabled={userStatus === 'pending'}
+                className={`px-6 py-4 font-semibold rounded-xl shadow-lg transition-all duration-200 flex items-center justify-center ${
+                  userStatus === 'pending'
+                    ? 'bg-gray-400 text-gray-600 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-green-500 to-teal-500 text-white hover:shadow-xl transform hover:scale-105'
+                }`}
               >
                 <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
                 </svg>
-                Initiate Payout
+                {userStatus === 'pending' ? 'Payout Disabled' : 'Initiate Payout'}
               </button>
             </div>
           </div>
@@ -881,44 +950,47 @@ export default function ProfilePage() {
             </div>
             
             {showPayoutHistory && (
-              <div className="space-y-3">
-                {payoutHistory.map((payout) => (
-                  <div key={payout.id} className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="flex items-center mb-2">
-                          <div className={`w-3 h-3 rounded-full mr-2 ${
-                            payout.status === 'pending' ? 'bg-yellow-500' : 
-                            payout.status === 'paid' ? 'bg-green-500' : 
-                            'bg-gray-500'
-                          }`}></div>
-                          <span className={`text-sm font-medium ${
-                            payout.status === 'pending' ? 'text-yellow-800' : 
-                            payout.status === 'paid' ? 'text-green-800' : 
-                            'text-gray-800'
-                          }`}>
-                            {payout.status === 'pending' ? 'Pending' : 
-                             payout.status === 'paid' ? 'Completed' : 
-                             'Processing'}
-                          </span>
+              <>
+                <div className="space-y-3">
+                  {payoutHistory.map((payout) => (
+                    <div key={payout.id} className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center mb-2">
+                            {/* Status Dot and Label - Only for paid/processing */}
+                            {payout.status === 'paid' ? (
+                              <>
+                                <div className="w-3 h-3 rounded-full mr-2 bg-green-500"></div>
+                                <span className="text-sm font-medium text-green-800">Completed</span>
+                              </>
+                            ) : payout.status !== 'pending' ? (
+                              <>
+                                <div className="w-3 h-3 rounded-full mr-2 bg-gray-500"></div>
+                                <span className="text-sm font-medium text-gray-800">Processing</span>
+                              </>
+                            ) : null}
+                          </div>
+                          <p className="text-2xl font-bold text-gray-900">${payout.amount.toFixed(2)}</p>
+                          <p className="text-sm text-gray-600">
+                            Initiated on {new Date(payout.created).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            })}
+                          </p>
                         </div>
-                        <p className="text-2xl font-bold text-gray-900">${payout.amount.toFixed(2)}</p>
-                        <p className="text-sm text-gray-600">
-                          Initiated on {new Date(payout.created).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric'
-                          })}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs text-gray-500">Payout ID</p>
-                        <p className="text-xs font-mono text-gray-700">{payout.id}</p>
+                        <div className="text-right">
+                          <p className="text-xs text-gray-500">Payout ID</p>
+                          <p className="text-xs font-mono text-gray-700">{payout.id}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+                <div className="text-center mt-4 text-xs text-gray-500">
+                  Questions? Contact <a href="mailto:pocketly.ai@gmail.com" className="underline text-blue-600">pocketly.ai@gmail.com</a>
+                </div>
+              </>
             )}
           </div>
         )}

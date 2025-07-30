@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import axios from "axios";
-import imageCompression from "browser-image-compression";
+import { useNavigate } from "react-router-dom";
+
 import {
   doc,
   getDoc,
@@ -29,6 +30,39 @@ export default function OfferLetterUploadPage() {
     additionalDetails: "",
   });
   const [missingReviews, setMissingReviews] = useState([]);
+  const [testOptional, setTestOptional] = useState(false);
+  const navigate = useNavigate();
+
+  // Check for pending submission after authentication
+  useEffect(() => {
+    const pendingSubmission = localStorage.getItem('pendingOfferSubmission');
+    if (pendingSubmission && auth.currentUser) {
+      try {
+        const submissionData = JSON.parse(pendingSubmission);
+        // Restore the form data and file
+        setFormData(submissionData.formData);
+        setSectionReviews(submissionData.sectionReviews);
+        setTestOptional(submissionData.testOptional);
+        
+        // Clear the pending submission
+        localStorage.removeItem('pendingOfferSubmission');
+        
+        // Auto-submit the form
+        setTimeout(() => {
+          handleSubmitInternal(
+            submissionData.formData, 
+            submissionData.sectionReviews, 
+            submissionData.testOptional,
+            submissionData.tempFileUrl,
+            submissionData.fileName
+          );
+        }, 1000);
+      } catch (error) {
+        console.error('Error restoring pending submission:', error);
+        localStorage.removeItem('pendingOfferSubmission');
+      }
+    }
+  }, [auth.currentUser]);
 
   // Update missing reviews whenever section reviews change
   useEffect(() => {
@@ -112,6 +146,10 @@ export default function OfferLetterUploadPage() {
               userData.state && userData.state !== ""
                 ? userData.state
                 : prev.state_of_residence || "",
+            activities:
+              userData.activities && userData.activities !== ""
+                ? userData.activities
+                : prev.activities || "",
           };
         });
       } catch (error) {
@@ -123,7 +161,7 @@ export default function OfferLetterUploadPage() {
   }, [formData]); // Add formData as dependency to run when form is populated
 
   /**
-   * Handle File Selection (with optional compression for images).
+   * Handle File Selection (PDF only).
    */
   const handleFileChange = async (event) => {
     if (!event.target.files) return;
@@ -132,31 +170,14 @@ export default function OfferLetterUploadPage() {
 
     console.log("DEBUG: File selected:", originalFile);
 
-    // If it's an image, attempt to compress it
-    if (originalFile.type.startsWith("image/")) {
-      const options = {
-        maxSizeMB: 2,
-        maxWidthOrHeight: 1024,
-        useWebWorker: true,
-      };
-
-      try {
-        const compressedFile = await imageCompression(originalFile, options);
-        setFile(compressedFile);
-        console.log(
-          `Original file size: ${(originalFile.size / 1024 / 1024).toFixed(2)} MB`
-        );
-        console.log(
-          `Compressed file size: ${(compressedFile.size / 1024 / 1024).toFixed(2)} MB`
-        );
-      } catch (error) {
-        console.error("Error compressing the image:", error);
-        alert("Failed to compress the image. Please try again.");
-      }
-    } else {
-      // Otherwise, keep the file as-is
-      setFile(originalFile);
+    // Check if file is a PDF
+    if (originalFile.type !== "application/pdf") {
+      alert("Please select a PDF file only.");
+      return;
     }
+
+    // Set the file
+    setFile(originalFile);
   };
 
   /**
@@ -231,13 +252,15 @@ export default function OfferLetterUploadPage() {
         },
         loans: {
           amount: structuredData?.loans?.amount || "",
-          details: structuredData?.federal_money?.details || "",
+          details: structuredData?.loans?.details || "",
         },
         workstudy: {
           amount: structuredData?.workstudy?.amount || "",
+          details: structuredData?.workstudy?.details || "",
         },
         efc_or_sai: {
           amount: structuredData?.efc_or_sai?.amount || "",
+          details: structuredData?.efc_or_sai?.details || "",
         },
         composite_act: structuredData?.composite_act || "",
         composite_sat: structuredData?.composite_sat || "",
@@ -352,15 +375,66 @@ export default function OfferLetterUploadPage() {
     console.log("DEBUG: Raw formData before submit:", JSON.stringify(formData, null, 2));
     console.log("DEBUG: Section reviews state:", sectionReviews);
 
+    // Check if user is authenticated
+    if (!auth.currentUser) {
+      // Upload file to temporary storage first
+      if (!file) {
+        alert("No file selected. Please upload a file first.");
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const storage = getStorage();
+        const tempFileRef = ref(storage, `tempOfferLetters/${Date.now()}_${file.name}`);
+        
+        console.log("DEBUG: Uploading file to temporary storage...");
+        await uploadBytes(tempFileRef, file);
+        
+        console.log("DEBUG: Getting temporary file URL...");
+        const tempFileUrl = await getDownloadURL(tempFileRef);
+        
+        // Store form data and temporary file URL for later submission
+        const submissionData = {
+          formData,
+          sectionReviews,
+          testOptional,
+          tempFileUrl,
+          fileName: file.name,
+          timestamp: Date.now()
+        };
+        localStorage.setItem('pendingOfferSubmission', JSON.stringify(submissionData));
+        
+        setLoading(false);
+        
+        // Redirect to sign-in page
+        navigate('/auth');
+        return;
+      } catch (error) {
+        console.error("Error uploading file to temporary storage:", error);
+        alert("Failed to prepare submission. Please try again.");
+        setLoading(false);
+        return;
+      }
+    }
+
+    // If authenticated, proceed with submission
+    await handleSubmitInternal(formData, sectionReviews, testOptional);
+  };
+
+  /**
+   * Internal submit function (called after authentication)
+   */
+  const handleSubmitInternal = async (dataToSubmit, reviewsToSubmit, testOptionalToSubmit, tempFileUrl = null, fileName = null) => {
     // Validate that all sections have been reviewed (must be either "ok" or "flag")
     const unreviewed = [];
-    if (sectionReviews.basicInfo !== "ok" && sectionReviews.basicInfo !== "flag") {
+    if (reviewsToSubmit.basicInfo !== "ok" && reviewsToSubmit.basicInfo !== "flag") {
       unreviewed.push("School & Cost Information");
     }
-    if (sectionReviews.aidScholarships !== "ok" && sectionReviews.aidScholarships !== "flag") {
+    if (reviewsToSubmit.aidScholarships !== "ok" && reviewsToSubmit.aidScholarships !== "flag") {
       unreviewed.push("Financial Aid & Scholarships");
     }
-    if (sectionReviews.additionalDetails !== "ok" && sectionReviews.additionalDetails !== "flag") {
+    if (reviewsToSubmit.additionalDetails !== "ok" && reviewsToSubmit.additionalDetails !== "flag") {
       unreviewed.push("Student Information");
     }
 
@@ -372,20 +446,32 @@ export default function OfferLetterUploadPage() {
 
     setMissingReviews([]); // Clear any previous errors
 
-    if (!formData || !formData.school_name) {
+    if (!dataToSubmit || !dataToSubmit.school_name) {
       alert("Missing school name. Cannot submit.");
       return;
     }
 
-    if (!file) {
+    if (!file && !tempFileUrl) {
       alert("No file selected. Please upload a file first.");
+      return;
+    }
+
+    // Validate test scores or test optional selection
+    if (!testOptionalToSubmit && !dataToSubmit?.composite_act && !dataToSubmit?.composite_sat) {
+      alert("Please either select 'Test Optional' or provide at least one test score (ACT or SAT).");
+      return;
+    }
+
+    // Validate admission type is selected
+    if (!dataToSubmit?.admission_type) {
+      alert("Please select an admission type.");
       return;
     }
 
     setLoading(true);
 
     try {
-      const schoolName = formData?.school_name?.name || "";
+      const schoolName = dataToSubmit?.school_name?.name || "";
 
       if (!schoolName) {
         alert("No school name found in formData!");
@@ -410,19 +496,26 @@ export default function OfferLetterUploadPage() {
         return;
       }
 
-      const flattenedData = flattenFormData(formData);
+      const flattenedData = flattenFormData(dataToSubmit);
       console.log("DEBUG: Flattened data:", JSON.stringify(flattenedData, null, 2));
 
       const uniqueId = uuidv4();
+      let fileUrl;
 
-      const storage = getStorage();
-      const fileRef = ref(storage, `offerLetters/${uniqueId}`);
+      if (tempFileUrl) {
+        // Use the temporary file URL if available
+        fileUrl = tempFileUrl;
+      } else {
+        // Upload the file normally
+        const storage = getStorage();
+        const fileRef = ref(storage, `offerLetters/${uniqueId}`);
 
-      console.log("DEBUG: Uploading file to Firebase Storage...");
-      await uploadBytes(fileRef, file);
+        console.log("DEBUG: Uploading file to Firebase Storage...");
+        await uploadBytes(fileRef, file);
 
-      console.log("DEBUG: Getting file's download URL...");
-      const fileUrl = await getDownloadURL(fileRef);
+        console.log("DEBUG: Getting file's download URL...");
+        fileUrl = await getDownloadURL(fileRef);
+      }
 
       console.log("DEBUG: File uploaded successfully. File URL:", fileUrl);
 
@@ -431,19 +524,21 @@ export default function OfferLetterUploadPage() {
 
       // Get sections that are flagged for review
       const flaggedSections = [];
-      if (sectionReviews.basicInfo === "flag") flaggedSections.push("basicInfo");
-      if (sectionReviews.aidScholarships === "flag") flaggedSections.push("aidScholarships");
-      if (sectionReviews.additionalDetails === "flag") flaggedSections.push("additionalDetails");
+      if (reviewsToSubmit.basicInfo === "flag") flaggedSections.push("basicInfo");
+      if (reviewsToSubmit.aidScholarships === "flag") flaggedSections.push("aidScholarships");
+      if (reviewsToSubmit.additionalDetails === "flag") flaggedSections.push("additionalDetails");
 
       const offerData = {
         ...flattenedData,
+        test_optional: testOptionalToSubmit,
         schoolId: ipedsId,
         offerId: uniqueId,
         fileUrl: fileUrl,
         date: currentDate,
-        sectionReviews: sectionReviews,
+        sectionReviews: reviewsToSubmit,
         flaggedForReview: flaggedSections.length > 0,
         flaggedSections: flaggedSections,
+        status: 'pending', // Always set status to pending
       };
 
       // Check if user has existing profile data
@@ -456,28 +551,28 @@ export default function OfferLetterUploadPage() {
       let hasNewData = false;
       
       // Check if user is entering these details for the first time
-      if (formData?.efc_or_sai?.amount && (!userData.sai || userData.sai === "")) {
-        userProfileUpdates.sai = formData.efc_or_sai.amount;
+      if (dataToSubmit?.efc_or_sai?.amount && (!userData.sai || userData.sai === "")) {
+        userProfileUpdates.sai = dataToSubmit.efc_or_sai.amount;
         hasNewData = true;
       }
       
       // Handle test scores - prioritize SAT over ACT if both are present
-      if ((formData?.composite_sat || formData?.composite_act) && (!userData.testScore || userData.testScore === "")) {
-        if (formData?.composite_sat) {
-          userProfileUpdates.testScore = formData.composite_sat;
-        } else if (formData?.composite_act) {
-          userProfileUpdates.testScore = formData.composite_act;
+      if ((dataToSubmit?.composite_sat || dataToSubmit?.composite_act) && (!userData.testScore || userData.testScore === "")) {
+        if (dataToSubmit?.composite_sat) {
+          userProfileUpdates.testScore = dataToSubmit.composite_sat;
+        } else if (dataToSubmit?.composite_act) {
+          userProfileUpdates.testScore = dataToSubmit.composite_act;
         }
         hasNewData = true;
       }
       
-      if (formData?.gpa && (!userData.gpa || userData.gpa === "")) {
-        userProfileUpdates.gpa = formData.gpa;
+      if (dataToSubmit?.gpa && (!userData.gpa || userData.gpa === "")) {
+        userProfileUpdates.gpa = dataToSubmit.gpa;
         hasNewData = true;
       }
       
-      if (formData?.state_of_residence && (!userData.state || userData.state === "")) {
-        userProfileUpdates.state = formData.state_of_residence;
+      if (dataToSubmit?.state_of_residence && (!userData.state || userData.state === "")) {
+        userProfileUpdates.state = dataToSubmit.state_of_residence;
         hasNewData = true;
       }
 
@@ -495,7 +590,7 @@ export default function OfferLetterUploadPage() {
           uid: user.uid,
         }),
         lastOfferAdded: currentDate, // Track when the latest offer was added
-        school_name: formData?.school_name?.name || "Unknown School", // Store school name for reference
+        school_name: dataToSubmit?.school_name?.name || "Unknown School", // Store school name for reference
       }, { merge: true }); // Use merge to create document if it doesn't exist
 
       // Update the main college data
@@ -521,6 +616,9 @@ export default function OfferLetterUploadPage() {
       setFormData(null);
       setResponse(null);
       setFile(null);
+      
+      // Show success message instead of redirecting
+      // navigate('/success');
     } catch (error) {
       console.error("Error submitting offer data:", error);
       alert("Failed to submit the offer data. Please try again.");
@@ -530,7 +628,7 @@ export default function OfferLetterUploadPage() {
   };
 
   const shouldShowDetails = (amount) => {
-    return typeof amount === "string" && amount.trim() !== "";
+    return amount !== null && amount !== undefined && amount !== "" && amount !== 0;
   };
 
   const handleSectionReviewChange = (section, value) => {
@@ -548,11 +646,27 @@ export default function OfferLetterUploadPage() {
   console.log("DEBUG: Current formData in render: ", formData);
   console.log("DEBUG: formData?.school_name in render: ", formData?.school_name);
 
+  // Add this helper function inside the component
+  const isStudentInfoComplete = () => {
+    return (
+      formData?.efc_or_sai?.amount &&
+      (testOptional || formData?.composite_act || formData?.composite_sat) &&
+      formData?.gpa &&
+      formData?.state_of_residence &&
+      formData?.admission_type
+    );
+  };
+
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
       {/* Navbar */}
 
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex flex-col items-center p-4 mt-2">
+      <div className="relative overflow-hidden min-h-screen flex flex-col items-center p-4">
+        {/* Background Pattern */}
+        <div className="absolute inset-0 bg-gradient-to-r from-blue-600/10 to-purple-600/10"></div>
+        <div className="absolute inset-0 bg-[url('data:image/svg+xml,%3Csvg%20width%3D%2260%22%20height%3D%2260%22%20viewBox%3D%220%200%2060%2060%22%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%3E%3Cg%20fill%3D%22none%22%20fill-rule%3D%22evenodd%22%3E%3Cg%20fill%3D%22%239C92AC%22%20fill-opacity%3D%220.05%22%3E%3Ccircle%20cx%3D%2230%22%20cy%3D%2230%22%20r%3D%222%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E')] opacity-50"></div>
+        
+        <div className="relative w-full flex flex-col items-center">
         {/* Page Header */}
         <header className="text-center mb-8 max-w-4xl">
           <div className="inline-flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-100 to-purple-100 rounded-full text-xs font-medium text-gray-700 mb-4">
@@ -568,7 +682,7 @@ export default function OfferLetterUploadPage() {
             </span>
           </h1>
           <p className="text-base text-gray-600 mb-4 max-w-2xl mx-auto leading-relaxed">
-            Upload a photo, PDF, or scanned document of your offer letter.
+            Upload a PDF of your offer letter.
             Our AI system will analyze it and categorize aid types.
           </p>
           
@@ -612,7 +726,7 @@ export default function OfferLetterUploadPage() {
            <div className="relative">
              <input
                type="file"
-               accept="image/*,.pdf"
+               accept=".pdf"
                onChange={handleFileChange}
                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                id="file-upload"
@@ -641,7 +755,7 @@ export default function OfferLetterUploadPage() {
                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                    </svg>
                    <p className="text-gray-700 font-medium text-sm">Drop file here</p>
-                   <p className="text-gray-500 text-xs">PDF, JPG, PNG (Max 10MB)</p>
+                   <p className="text-gray-500 text-xs">PDF files only (Max 10MB)</p>
                  </div>
                )}
              </label>
@@ -699,39 +813,7 @@ export default function OfferLetterUploadPage() {
          )}
 
                  {/* Information Cards */}
-         {!formData && !loading && (
-           <div className="w-full max-w-3xl grid grid-cols-3 gap-4 mb-8">
-             <div className="bg-white/60 backdrop-blur-sm rounded-lg p-4 text-center border border-white/40">
-               <div className="w-8 h-8 bg-gradient-to-r from-green-400 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-2">
-                 <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                 </svg>
-               </div>
-               <h3 className="text-sm font-semibold text-gray-900 mb-1">Upload</h3>
-               <p className="text-gray-600 text-xs">Secure upload</p>
-             </div>
-
-             <div className="bg-white/60 backdrop-blur-sm rounded-lg p-4 text-center border border-white/40">
-               <div className="w-8 h-8 bg-gradient-to-r from-blue-400 to-purple-500 rounded-full flex items-center justify-center mx-auto mb-2">
-                 <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                 </svg>
-               </div>
-               <h3 className="text-sm font-semibold text-gray-900 mb-1">AI Analysis</h3>
-               <p className="text-gray-600 text-xs">Data extraction</p>
-             </div>
-
-             <div className="bg-white/60 backdrop-blur-sm rounded-lg p-4 text-center border border-white/40">
-               <div className="w-8 h-8 bg-gradient-to-r from-purple-400 to-pink-500 rounded-full flex items-center justify-center mx-auto mb-2">
-                 <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                 </svg>
-               </div>
-               <h3 className="text-sm font-semibold text-gray-900 mb-1">Earn Money</h3>
-               <p className="text-gray-600 text-xs">Start earning</p>
-             </div>
-           </div>
-         )}
+   
 
         {/* If we have formData, show the results */}
         {!submitted && formData && (
@@ -827,18 +909,7 @@ export default function OfferLetterUploadPage() {
                       className="w-full pl-8 pr-4 py-4 border-2 border-gray-200 rounded-xl bg-gradient-to-r from-green-50 to-blue-50 text-gray-800 font-medium text-lg shadow-sm"
                     />
                   </div>
-                  {shouldShowDetails(formData?.cost_of_attendance?.amount) && (
-                    <div className="mt-4">
-                      <label className="block text-gray-600 font-medium mb-2">Additional Details</label>
-                      <textarea
-                        value={formData?.cost_of_attendance?.details || ""}
-                        readOnly
-                        placeholder="Details"
-                        className="w-full p-4 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
-                        rows={3}
-                      />
-                    </div>
-                  )}
+
                 </div>
               </div>
 
@@ -881,7 +952,7 @@ export default function OfferLetterUploadPage() {
 
             {/* ===============================
                 FINANCIAL AID SECTION
-               (Always Read-Only)
+               (Details are Editable)
             =============================== */}
             <div className={`bg-white rounded-2xl p-8 shadow-lg mb-8 ${
               missingReviews.includes("Financial Aid & Scholarships") 
@@ -908,6 +979,7 @@ export default function OfferLetterUploadPage() {
                 </div>
                 <div className="flex-1">
                   <h3 className="text-2xl font-bold text-gray-800">Financial Aid & Scholarships</h3>
+                  <p className="text-blue-600 font-medium text-sm mt-1">✏️ Details can be edited</p>
                   {missingReviews.includes("Financial Aid & Scholarships") && (
                     <p className="text-red-600 font-medium text-sm mt-1">⚠ Please review this section</p>
                   )}
@@ -940,9 +1012,9 @@ export default function OfferLetterUploadPage() {
                   {shouldShowDetails(formData?.financial_aid?.amount) && (
                     <textarea
                       value={formData?.financial_aid?.details || ""}
-                      readOnly
+                      onChange={(e) => handleChange("financial_aid", "details", e.target.value)}
                       placeholder="Details"
-                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                       rows={2}
                     />
                   )}
@@ -967,9 +1039,9 @@ export default function OfferLetterUploadPage() {
                   {shouldShowDetails(formData?.merit_aid?.amount) && (
                     <textarea
                       value={formData?.merit_aid?.details || ""}
-                      readOnly
+                      onChange={(e) => handleChange("merit_aid", "details", e.target.value)}
                       placeholder="Details"
-                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                       rows={2}
                     />
                   )}
@@ -994,9 +1066,9 @@ export default function OfferLetterUploadPage() {
                   {shouldShowDetails(formData?.other_aid?.amount) && (
                     <textarea
                       value={formData?.other_aid?.details || ""}
-                      readOnly
+                      onChange={(e) => handleChange("other_aid", "details", e.target.value)}
                       placeholder="Details"
-                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                       rows={2}
                     />
                   )}
@@ -1021,9 +1093,9 @@ export default function OfferLetterUploadPage() {
                   {shouldShowDetails(formData?.federal_money?.amount) && (
                     <textarea
                       value={formData?.federal_money?.details || ""}
-                      readOnly
+                      onChange={(e) => handleChange("federal_money", "details", e.target.value)}
                       placeholder="Details"
-                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                       rows={2}
                     />
                   )}
@@ -1048,9 +1120,9 @@ export default function OfferLetterUploadPage() {
                   {shouldShowDetails(formData?.loans?.amount) && (
                     <textarea
                       value={formData?.loans?.details || ""}
-                      readOnly
+                      onChange={(e) => handleChange("loans", "details", e.target.value)}
                       placeholder="Details"
-                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-gray-700 resize-none shadow-sm"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                       rows={2}
                     />
                   )}
@@ -1072,6 +1144,15 @@ export default function OfferLetterUploadPage() {
                       className="w-full pl-8 pr-4 py-4 border-2 border-gray-200 rounded-xl bg-gradient-to-r from-yellow-50 to-amber-50 text-gray-800 font-medium shadow-sm"
                     />
                   </div>
+                  {shouldShowDetails(formData?.workstudy?.amount) && (
+                    <textarea
+                      value={formData?.workstudy?.details || ""}
+                      onChange={(e) => handleChange("workstudy", "details", e.target.value)}
+                      placeholder="Details"
+                      className="w-full p-3 border-2 border-gray-200 rounded-xl bg-white text-gray-700 resize-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
+                      rows={2}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1158,188 +1239,281 @@ export default function OfferLetterUploadPage() {
                 </div>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {/* SAI/EFC */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-gray-700 font-semibold">
-                    <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                    </svg>
-                    Student Aid Index (SAI)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-4 text-gray-500 font-medium">$</span>
-                    <input
-                      type="text"
-                      value={formData?.efc_or_sai?.amount || ""}
-                      onChange={(e) => handleChange("efc_or_sai", "amount", e.target.value)}
-                      placeholder="Expected Family Contribution"
-                      className={`w-full pl-8 pr-4 py-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
-                        formData?.efc_or_sai?.amount && auth.currentUser ? 
-                          "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
-                          "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      }`}
-                    />
+              <div className="space-y-6">
+                {/* First Row: SAI, Test Scores, GPA */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* SAI/EFC */}
+                  <div className="space-y-3">
+                    <label className="flex items-center text-gray-700 font-semibold">
+                      <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                      </svg>
+                      Student Aid Index (SAI)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-4 text-gray-500 font-medium">$</span>
+                      <input
+                        type="text"
+                        value={formData?.efc_or_sai?.amount || ""}
+                        onChange={(e) => handleChange("efc_or_sai", "amount", e.target.value)}
+                        placeholder="Expected Family Contribution"
+                        className={`w-full pl-8 pr-4 py-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
+                          formData?.efc_or_sai?.amount && auth.currentUser ? 
+                            "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
+                            "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        }`}
+                      />
+                      {formData?.efc_or_sai?.amount && auth.currentUser && (
+                        <div className="absolute right-3 top-4">
+                          <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </div>
                     {formData?.efc_or_sai?.amount && auth.currentUser && (
-                      <div className="absolute right-3 top-4">
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                      <p className="text-xs text-green-600 flex items-center">
+                        <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                           <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                         </svg>
+                        Auto-filled from your profile
+                      </p>
+                    )}
+
+                  </div>
+
+                  {/* Test Scores Section */}
+                  <div className="space-y-3">
+                    <label className="flex items-center text-gray-700 font-semibold">
+                      <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Test Scores
+                    </label>
+
+                    {!testOptional && (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          {/* ACT Score */}
+                          <div className="space-y-1">
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={formData?.composite_act || ""}
+                                onChange={(e) => handleChange("composite_act", undefined, e.target.value)}
+                                placeholder="36 max"
+                                className={`w-full p-2 border-2 rounded-lg font-medium shadow-sm transition-all text-sm ${
+                                  formData?.composite_act && auth.currentUser ? 
+                                    "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
+                                    "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                }`}
+                              />
+                              {formData?.composite_act && auth.currentUser && (
+                                <div className="absolute right-2 top-2">
+                                  <svg className="w-3 h-3 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                            <label className="text-xs text-gray-600 font-medium">ACT</label>
+                          </div>
+
+                          {/* SAT Score */}
+                          <div className="space-y-1">
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={formData?.composite_sat || ""}
+                                onChange={(e) => handleChange("composite_sat", undefined, e.target.value)}
+                                placeholder="1600 max"
+                                className={`w-full p-2 border-2 rounded-lg font-medium shadow-sm transition-all text-sm ${
+                                  formData?.composite_sat && auth.currentUser ? 
+                                    "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
+                                    "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                }`}
+                              />
+                              {formData?.composite_sat && auth.currentUser && (
+                                <div className="absolute right-2 top-2">
+                                  <svg className="w-3 h-3 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                            <label className="text-xs text-gray-600 font-medium">SAT</label>
+                          </div>
+                        </div>
+                        {(formData?.composite_act || formData?.composite_sat) && auth.currentUser && (
+                          <p className="text-xs text-green-600 flex items-center">
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            Auto-filled from your profile
+                          </p>
+                        )}
                       </div>
                     )}
-                  </div>
-                  {formData?.efc_or_sai?.amount && auth.currentUser && (
-                    <p className="text-xs text-green-600 flex items-center">
-                      <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      Auto-filled from your profile
-                    </p>
-                  )}
-                </div>
 
-                {/* ACT Score */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-gray-700 font-semibold">
-                    <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    ACT Composite Score
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={formData?.composite_act || ""}
-                      onChange={(e) => handleChange("composite_act", undefined, e.target.value)}
-                      placeholder="36 max"
-                      className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
-                        formData?.composite_act && auth.currentUser ? 
-                          "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
-                          "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      }`}
-                    />
-                    {formData?.composite_act && auth.currentUser && (
-                      <div className="absolute right-3 top-4">
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    )}
+                    {/* Test Optional Checkbox */}
+                    <div className="flex items-center space-x-3">
+                      <input
+                        type="checkbox"
+                        id="test-optional"
+                        checked={testOptional}
+                        onChange={(e) => setTestOptional(e.target.checked)}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                      />
+                      <label htmlFor="test-optional" className="text-sm text-gray-700">
+                        Test Optional (I did not submit test scores)
+                      </label>
+                    </div>
                   </div>
-                  {formData?.composite_act && auth.currentUser && (
-                    <p className="text-xs text-green-600 flex items-center">
-                      <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      Auto-filled from your profile
-                    </p>
-                  )}
-                </div>
 
-                {/* SAT Score */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-gray-700 font-semibold">
-                    <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    SAT Total Score
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={formData?.composite_sat || ""}
-                      onChange={(e) => handleChange("composite_sat", undefined, e.target.value)}
-                      placeholder="1600 max"
-                      className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
-                        formData?.composite_sat && auth.currentUser ? 
-                          "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
-                          "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      }`}
-                    />
-                    {formData?.composite_sat && auth.currentUser && (
-                      <div className="absolute right-3 top-4">
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                  {formData?.composite_sat && auth.currentUser && (
-                    <p className="text-xs text-green-600 flex items-center">
-                      <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  {/* GPA */}
+                  <div className="space-y-3">
+                    <label className="flex items-center text-gray-700 font-semibold">
+                      <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
                       </svg>
-                      Auto-filled from your profile
-                    </p>
-                  )}
-                </div>
-
-                {/* GPA */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-gray-700 font-semibold">
-                    <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                    </svg>
-                    Grade Point Average
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={formData?.gpa || ""}
-                      onChange={(e) => handleChange("gpa", undefined, e.target.value)}
-                      placeholder="4.0 scale"
-                      className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
-                        formData?.gpa && auth.currentUser ? 
-                          "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
-                          "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                      }`}
-                    />
+                      Grade Point Average
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={formData?.gpa || ""}
+                        onChange={(e) => handleChange("gpa", undefined, e.target.value)}
+                        placeholder="4.0 scale"
+                        className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
+                          formData?.gpa && auth.currentUser ? 
+                            "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
+                            "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        }`}
+                      />
+                      {formData?.gpa && auth.currentUser && (
+                        <div className="absolute right-3 top-4">
+                          <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </div>
                     {formData?.gpa && auth.currentUser && (
-                      <div className="absolute right-3 top-4">
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                      <p className="text-xs text-green-600 flex items-center">
+                        <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                           <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                         </svg>
-                      </div>
+                        Auto-filled from your profile
+                      </p>
                     )}
                   </div>
-                  {formData?.gpa && auth.currentUser && (
-                    <p className="text-xs text-green-600 flex items-center">
-                      <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      Auto-filled from your profile
-                    </p>
-                  )}
                 </div>
 
-                {/* State */}
+                {/* Second Row: State of Residence, Admission Type */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* State */}
+                  <div className="space-y-3">
+                    <label className="flex items-center text-gray-700 font-semibold">
+                      <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                      State of Residence
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={formData?.state_of_residence || ""}
+                        onChange={(e) => {
+                          const value = e.target.value.toUpperCase();
+                          if (value.length <= 2) {
+                            handleChange("state_of_residence", undefined, value);
+                          }
+                        }}
+                        placeholder="e.g. CA, NY, TX"
+                        maxLength={2}
+                        className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
+                          formData?.state_of_residence && auth.currentUser ? 
+                            "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
+                            "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        }`}
+                      />
+                      {formData?.state_of_residence && auth.currentUser && (
+                        <div className="absolute right-3 top-4">
+                          <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </div>
+                    {formData?.state_of_residence && auth.currentUser && (
+                      <p className="text-xs text-green-600 flex items-center">
+                        <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        Auto-filled from your profile
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Admission Type */}
+                  <div className="space-y-3">
+                    <label className="flex items-center text-gray-700 font-semibold">
+                      <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3a2 2 0 012-2h4a2 2 0 012 2v4m-6 4v10m6-10v10m-6 0h6" />
+                      </svg>
+                      Admission Type *
+                    </label>
+                    <select
+                      value={formData?.admission_type || ""}
+                      onChange={(e) => handleChange("admission_type", undefined, e.target.value)}
+                      required
+                      className={`w-full p-4 border-2 rounded-xl bg-white text-gray-800 font-medium shadow-sm focus:ring-2 focus:ring-blue-100 transition-all appearance-none ${
+                        !formData?.admission_type ? 'border-red-300 focus:border-red-500' : 'border-gray-300 focus:border-blue-500'
+                      }`}
+                      style={{
+                        backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+                        backgroundPosition: 'right 1rem center',
+                        backgroundRepeat: 'no-repeat',
+                        backgroundSize: '1.5em 1.5em',
+                      }}
+                    >
+                      <option value="" disabled>
+                        Select Admission Type (Required)
+                      </option>
+                      <option value="Early Decision">Early Decision</option>
+                      <option value="Early Action">Early Action</option>
+                      <option value="Regular Decision">Regular Decision</option>
+                      <option value="Rolling Admission">Rolling Admission</option>
+                      <option value="Deferred Admission">Deferred Admission</option>
+                    </select>
+                    {!formData?.admission_type && (
+                      <p className="text-red-600 text-sm">Please select an admission type</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Third Row: Activities (Full Width) */}
                 <div className="space-y-3">
                   <label className="flex items-center text-gray-700 font-semibold">
                     <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                     </svg>
-                    State of Residence
+                    Activities & Extracurriculars (Optional)
                   </label>
                   <div className="relative">
-                    <input
-                      type="text"
-                      value={formData?.state_of_residence || ""}
-                      onChange={(e) => {
-                        const value = e.target.value.toUpperCase();
-                        if (value.length <= 2) {
-                          handleChange("state_of_residence", undefined, value);
-                        }
-                      }}
-                      placeholder="e.g. CA, NY, TX"
-                      maxLength={2}
-                      className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all ${
-                        formData?.state_of_residence && auth.currentUser ? 
+                    <textarea
+                      value={formData?.activities || ""}
+                      onChange={(e) => handleChange("activities", undefined, e.target.value)}
+                      placeholder="List your activities, clubs, sports, volunteer work, etc. (Auto-filled from your profile if available)"
+                      rows={4}
+                      className={`w-full p-4 border-2 rounded-xl font-medium shadow-sm transition-all resize-none ${
+                        formData?.activities && auth.currentUser ? 
                           "border-green-400 bg-green-50 focus:border-green-500 focus:ring-2 focus:ring-green-100" : 
                           "border-gray-300 bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       }`}
                     />
-                    {formData?.state_of_residence && auth.currentUser && (
+                    {formData?.activities && auth.currentUser && (
                       <div className="absolute right-3 top-4">
                         <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
                           <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
@@ -1347,7 +1521,7 @@ export default function OfferLetterUploadPage() {
                       </div>
                     )}
                   </div>
-                  {formData?.state_of_residence && auth.currentUser && (
+                  {formData?.activities && auth.currentUser && (
                     <p className="text-xs text-green-600 flex items-center">
                       <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                         <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
@@ -1355,36 +1529,6 @@ export default function OfferLetterUploadPage() {
                       Auto-filled from your profile
                     </p>
                   )}
-                </div>
-
-                {/* Admission Type */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-gray-700 font-semibold">
-                    <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3a2 2 0 012-2h4a2 2 0 012 2v4m-6 4v10m6-10v10m-6 0h6" />
-                    </svg>
-                    Admission Type
-                  </label>
-                  <select
-                    value={formData?.admission_type || ""}
-                    onChange={(e) => handleChange("admission_type", undefined, e.target.value)}
-                    className="w-full p-4 border-2 border-gray-300 rounded-xl bg-white text-gray-800 font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all appearance-none"
-                    style={{
-                      backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-                      backgroundPosition: 'right 1rem center',
-                      backgroundRepeat: 'no-repeat',
-                      backgroundSize: '1.5em 1.5em',
-                    }}
-                  >
-                    <option value="" disabled>
-                      Select Admission Type
-                    </option>
-                    <option value="Early Decision">Early Decision</option>
-                    <option value="Early Action">Early Action</option>
-                    <option value="Regular Decision">Regular Decision</option>
-                    <option value="Rolling Admission">Rolling Admission</option>
-                    <option value="Deferred Admission">Deferred Admission</option>
-                  </select>
                 </div>
               </div>
 
@@ -1406,6 +1550,7 @@ export default function OfferLetterUploadPage() {
                         value="ok"
                         checked={sectionReviews.additionalDetails === "ok"}
                         onChange={() => handleSectionReviewChange("additionalDetails", "ok")}
+                        disabled={!isStudentInfoComplete()}
                       />
                       <span className="ml-3 text-green-700 font-medium">✓ Complete</span>
                     </label>
@@ -1499,22 +1644,51 @@ export default function OfferLetterUploadPage() {
                       : "Your offer letter data is ready for submission."
                     }
                   </p>
+                  {!auth.currentUser && missingReviews.length === 0 && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                      <div className="flex items-center">
+                        <svg className="w-5 h-5 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <p className="text-blue-700 font-medium text-sm">
+                          You'll need to sign in to submit your offer letter. Your data will be saved and submitted automatically after authentication.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={handleSubmit}
-                  disabled={missingReviews.length > 0}
+                  disabled={missingReviews.length > 0 || loading}
                   className={`w-full max-w-md mx-auto py-4 px-8 rounded-2xl font-bold text-lg transition-all duration-200 shadow-lg flex items-center justify-center space-x-3 ${
-                    missingReviews.length > 0
+                    missingReviews.length > 0 || loading
                       ? "bg-gray-400 text-gray-300 cursor-not-allowed"
                       : "bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700 transform hover:scale-105 hover:shadow-xl"
                   }`}
                 >
-                  <span>
-                    {missingReviews.length > 0 ? "Complete Reviews to Submit" : "Submit Offer Letter"}
-                  </span>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                  </svg>
+                  {loading ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5 mr-2 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                      </svg>
+                      <span>Submitting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>
+                        {missingReviews.length > 0 
+                          ? "Complete Reviews to Submit" 
+                          : !auth.currentUser 
+                            ? "Sign In to Submit" 
+                            : "Submit Offer Letter"
+                        }
+                      </span>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                      </svg>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -1532,10 +1706,10 @@ export default function OfferLetterUploadPage() {
               </div>
               <div>
                 <h2 className="text-4xl font-bold bg-gradient-to-r from-green-700 to-emerald-600 bg-clip-text text-transparent mb-4">
-                  Submission Successful! 🎉
+                  Submission Received
                 </h2>
                 <p className="text-green-700 text-lg font-medium mb-6">
-                  Your offer letter data has been successfully submitted and added to your profile.
+                  Your offer has been submitted. Our team will review it within 24 hours to confirm.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
                   <button
@@ -1555,6 +1729,7 @@ export default function OfferLetterUploadPage() {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

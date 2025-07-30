@@ -60,9 +60,13 @@ export default function SchoolPage() {
   const [viewedPages, setViewedPages] = useState(new Set()); // Track which pages have been viewed/paid for
   const [totalCreditsUsedThisSession, setTotalCreditsUsedThisSession] = useState(0);
   const [hasChargedInitialPage, setHasChargedInitialPage] = useState(false);
+  const [hasInitializedFirstPage, setHasInitializedFirstPage] = useState(false);
 
   // SAI is a numeric or null value
   const [SAI, setSAI] = useState(null);
+
+  // Expanded offer state for dropdown details
+  const [expandedOffer, setExpandedOffer] = useState(null);
 
   // Firestore, Auth
   const db = getFirestore(firebaseApp);
@@ -287,22 +291,6 @@ export default function SchoolPage() {
     }
   }, [loading, user, schoolData]);
 
-  // Handle first page initialization after view status is determined
-  useEffect(() => {
-    if (!loading && user && schoolData && (hasViewedBefore === true || hasViewedBefore === false)) {
-      // View status has been determined, now handle first page
-      if (hasViewedBefore) {
-        // Return visitor - free access, just set the page
-        setCurrentPage(1);
-        console.log(`[Credit System] Return visitor - loading page 1 for free`);
-      } else {
-        // First-time visitor - charge for first page
-        console.log(`[Credit System] First-time visitor - will charge for page 1`);
-        handlePageNavigation(1);
-      }
-    }
-  }, [loading, user, schoolData, hasViewedBefore]);
-
   // Simple credit calculation for pagination
   const getCreditsForPage = (pageNumber) => {
     if (!schoolData?.offers) return 0;
@@ -320,7 +308,7 @@ export default function SchoolPage() {
   };
 
   const checkSchoolViewStatus = async () => {
-    if (!schoolData || !schoolData.offers || !user) {
+    if (!schoolData || !schoolData.offers || !user || hasInitializedFirstPage) {
       return;
     }
 
@@ -338,9 +326,21 @@ export default function SchoolPage() {
     setUserCredits(freshCredits);
     setHasViewedBefore(hasViewedThisSchool);
     setCreditsDeducted(0);
+    setHasInitializedFirstPage(true);
     
     console.log(`[Credit System] ${hasViewedThisSchool ? 'Return visitor' : 'First-time visitor'} to school ${id}`);
     console.log(`[Credit System] School has ${schoolData.offers.length} total offers`);
+    
+    // Handle first page loading based on view status
+    if (hasViewedThisSchool) {
+      // Return visitor - free access, just set the page
+      setCurrentPage(1);
+      console.log(`[Credit System] Return visitor - immediately loading page 1 for free`);
+    } else {
+      // First-time visitor - charge for first page
+      console.log(`[Credit System] First-time visitor - will charge for page 1`);
+      handlePageNavigation(1);
+    }
   };
 
   const handlePageNavigation = async (newPage) => {
@@ -349,8 +349,16 @@ export default function SchoolPage() {
       return;
     }
 
+    // Double-check if user has viewed this school before (defensive programming)
+    const userRef = doc(db, "users", user.uid);
+    const userDoc = await getDoc(userRef);
+    const freshUserData = userDoc.data();
+    const viewedOffers = freshUserData?.viewedOffers || {};
+    const schoolKey = `school_${id}`;
+    const hasViewedThisSchool = viewedOffers[schoolKey] || false;
+
     // Return visitors get free access
-    if (hasViewedBefore) {
+    if (hasViewedThisSchool) {
       setCurrentPage(newPage);
       console.log(`[Credit System] Return visitor - free navigation to page ${newPage}`);
       return;
@@ -363,13 +371,17 @@ export default function SchoolPage() {
       return;
     }
 
+    // Prevent duplicate credit deduction for first page
+    if (newPage === 1 && hasChargedInitialPage) {
+      setCurrentPage(newPage);
+      console.log(`[Credit System] First page already charged, skipping duplicate deduction`);
+      return;
+    }
+
     // Calculate credits needed for this page
     const creditsNeeded = getCreditsForPage(newPage);
     
     // Get fresh user credits
-    const userRef = doc(db, "users", user.uid);
-    const userDoc = await getDoc(userRef);
-    const freshUserData = userDoc.data();
     const freshCredits = freshUserData?.searchCredit || 0;
 
     console.log(`[Credit System] Page ${newPage} requires ${creditsNeeded} credits. User has ${freshCredits} credits.`);
@@ -386,6 +398,11 @@ export default function SchoolPage() {
         setTotalCreditsUsedThisSession(prev => prev + creditsNeeded);
         setViewedPages(prev => new Set(prev).add(newPage));
         setCurrentPage(newPage);
+        
+        // Mark first page as charged if this is page 1
+        if (newPage === 1) {
+          setHasChargedInitialPage(true);
+        }
 
         // Mark school as viewed for future free access
         await updateDoc(userRef, {
@@ -689,17 +706,35 @@ export default function SchoolPage() {
   };
 
   const capitalizeFirstLetter = (name) => {
-    const exceptions = ["of", "and", "for", "the", "at", "in", "on"];
+    if (!name) return "";
     return name
-      .toLowerCase()
       .split(" ")
-      .map((word, index) => {
-        if (index === 0 || !exceptions.includes(word)) {
-          return word.charAt(0).toUpperCase() + word.slice(1);
-        }
-        return word;
+      .map((word) => {
+        if (word.length === 0) return word;
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
       })
       .join(" ");
+  };
+
+  // Helper function to check if an offer has any details
+  const hasOfferDetails = (offer) => {
+    const detailFields = [
+      'cost_of_attendance_details',
+      'financial_aid_details', 
+      'merit_aid_details',
+      'other_aid_details',
+      'federal_money_details',
+      'workstudy_details',
+      'loans_details',
+      'efc_or_sai_details'
+    ];
+    
+    return detailFields.some(field => offer[field] && offer[field].trim() !== '');
+  };
+
+  // Helper function to toggle offer expansion
+  const toggleOfferExpansion = (offerIndex) => {
+    setExpandedOffer(expandedOffer === offerIndex ? null : offerIndex);
   };
 
   // Component to show credit cost for pagination
@@ -803,55 +838,128 @@ export default function SchoolPage() {
               {/* Only show offers if user is logged in AND (has viewed before OR has paid for this page OR has enough credits) */}
               {user && (hasViewedBefore || viewedPages.has(currentPage) || userCredits >= getCreditsForPage(currentPage)) ? (
                 currentOffers.map((offer, index) => (
-                  <TableRow
-                    key={index}
-                    className="hover:bg-green-50 transition-colors cursor-pointer"
-                  >
-                    <TableCell className="p-4">
-                      <div className="flex items-center justify-center">
-                        <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                    </TableCell>
-                    <TableCell className="p-4">
-                      {capitalizeFirstLetter(schoolData.school_name)}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      ${formatNumber(offer.cost_of_attendance)}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      $
-                      {formatNumber(
-                        offer.financial_aid + (offer.need_based_grant_aid || 0)
-                      )}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      ${formatNumber(offer.merit_aid)}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      $
-                      {formatNumber(
-                        offer.other_aid || offer.other_private_scholarships
-                      )}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      {offer.composite_sat
-                        ? `SAT: ${formatNumber(offer.composite_sat, true)}`
-                        : `ACT: ${formatNumber(offer.composite_act, true)}`}
-                    </TableCell>
-                    <TableCell className="p-4">{offer.gpa}</TableCell>
-                    <TableCell className="p-4">
-                      {(() => {
-                        const saiValue = getSAIForOffer(offer);
-                        return saiValue !== null ? formatNumber(saiValue) : "N/A";
-                      })()}
-                    </TableCell>
-                    <TableCell className="p-4">
-                      {offer.state_of_residence}
-                    </TableCell>
-                    <TableCell className="p-4">{offer.admission_type}</TableCell>
-                  </TableRow>
+                  <React.Fragment key={index}>
+                    <TableRow
+                      className={`hover:bg-green-50 transition-colors ${hasOfferDetails(offer) ? 'cursor-pointer' : ''}`}
+                      onClick={() => hasOfferDetails(offer) && toggleOfferExpansion(index)}
+                    >
+                      <TableCell className="p-4">
+                        <div className="flex items-center justify-center">
+                          <svg className="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      </TableCell>
+                      <TableCell className="p-4">
+                        <div className="flex items-center">
+                          {capitalizeFirstLetter(schoolData.school_name)}
+                          {hasOfferDetails(offer) && (
+                            <svg 
+                              className={`w-4 h-4 ml-2 transition-transform ${expandedOffer === index ? 'rotate-180' : ''}`} 
+                              fill="currentColor" 
+                              viewBox="0 0 20 20"
+                            >
+                              <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="p-4">
+                        ${formatNumber(offer.cost_of_attendance)}
+                      </TableCell>
+                      <TableCell className="p-4">
+                        $
+                        {formatNumber(
+                          offer.financial_aid + (offer.need_based_grant_aid || 0)
+                        )}
+                      </TableCell>
+                      <TableCell className="p-4">
+                        ${formatNumber(offer.merit_aid)}
+                      </TableCell>
+                      <TableCell className="p-4">
+                        $
+                        {formatNumber(
+                          offer.other_aid || offer.other_private_scholarships
+                        )}
+                      </TableCell>
+                      <TableCell className="p-4">
+                        {offer.composite_sat
+                          ? `SAT: ${formatNumber(offer.composite_sat, true)}`
+                          : `ACT: ${formatNumber(offer.composite_act, true)}`}
+                      </TableCell>
+                      <TableCell className="p-4">{offer.gpa}</TableCell>
+                      <TableCell className="p-4">
+                        {(() => {
+                          const saiValue = getSAIForOffer(offer);
+                          return saiValue !== null ? formatNumber(saiValue) : "N/A";
+                        })()}
+                      </TableCell>
+                      <TableCell className="p-4">
+                        {offer.state_of_residence}
+                      </TableCell>
+                      <TableCell className="p-4">{offer.admission_type}</TableCell>
+                    </TableRow>
+                    
+                    {/* Details Dropdown */}
+                    {expandedOffer === index && hasOfferDetails(offer) && (
+                      <TableRow>
+                        <TableCell colSpan={11} className="p-0">
+                          <div className="bg-gray-50 border-t border-gray-200 p-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                              {offer.cost_of_attendance_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Cost of Attendance</h4>
+                                  <p className="text-sm text-gray-600">{offer.cost_of_attendance_details}</p>
+                                </div>
+                              )}
+                              {offer.financial_aid_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Financial Aid</h4>
+                                  <p className="text-sm text-gray-600">{offer.financial_aid_details}</p>
+                                </div>
+                              )}
+                              {offer.merit_aid_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Merit Aid</h4>
+                                  <p className="text-sm text-gray-600">{offer.merit_aid_details}</p>
+                                </div>
+                              )}
+                              {offer.other_aid_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Other Aid</h4>
+                                  <p className="text-sm text-gray-600">{offer.other_aid_details}</p>
+                                </div>
+                              )}
+                              {offer.federal_money_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Federal Money</h4>
+                                  <p className="text-sm text-gray-600">{offer.federal_money_details}</p>
+                                </div>
+                              )}
+                              {offer.workstudy_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Work Study</h4>
+                                  <p className="text-sm text-gray-600">{offer.workstudy_details}</p>
+                                </div>
+                              )}
+                              {offer.loans_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">Loans</h4>
+                                  <p className="text-sm text-gray-600">{offer.loans_details}</p>
+                                </div>
+                              )}
+                              {offer.efc_or_sai_details && (
+                                <div className="bg-white p-3 rounded-lg shadow-sm">
+                                  <h4 className="font-semibold text-gray-800 mb-2">EFC/SAI</h4>
+                                  <p className="text-sm text-gray-600">{offer.efc_or_sai_details}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </React.Fragment>
                 ))
               ) : (
                 <TableRow>

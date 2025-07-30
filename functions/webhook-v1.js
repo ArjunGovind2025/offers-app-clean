@@ -4,10 +4,20 @@ const Stripe = require("stripe");
 
 const db = admin.firestore();
 
-// Initialize Stripe (with fallback for deployment analysis)
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-12-18.acacia",
-});
+// Initialize Stripe
+let stripe;
+
+try {
+  stripe = new Stripe(functions.config().stripe.secret_key, {
+    apiVersion: "2024-12-18.acacia",
+  });
+} catch (error) {
+  console.error("Failed to initialize Stripe:", error);
+  // Fallback for development
+  stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: "2024-12-18.acacia",
+  });
+}
 
 const webhookHandler = functions.https.onRequest(async (req, res) => {
   console.log("🚀 WEBHOOK CALLED - Headers:", req.headers);
