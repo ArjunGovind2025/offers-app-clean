@@ -10,13 +10,13 @@ import { getFunctions } from "firebase/functions"; // Import functions
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyAEDIWIbuLkLN88WRXdWeorfKAygWax4oc",
-  authDomain: "offers-5e23d.firebaseapp.com",
-  projectId: "offers-5e23d",
-  storageBucket: "offers-5e23d.firebasestorage.app", // Fixed the storageBucket URL
-  messagingSenderId: "695731252828",
-  appId: "1:695731252828:web:5f1ace19518f97882d0099",
-  measurementId: "G-LF4L9FZPB0",
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID,
+  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID,
 };
 
 // Initialize Firebase

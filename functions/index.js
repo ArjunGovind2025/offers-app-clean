@@ -60,7 +60,7 @@ createPayoutApp.post("/", async (req, res) => {
     
     if (!hasTransfers) {
       // Generate onboarding link
-      const baseUrl = `http://localhost:3000`;
+      const baseUrl = process.env.FRONTEND_URL || 'https://offers-5e23d.web.app';
       
       const accountLink = await stripe.accountLinks.create({
         account: userStripeAccountId,
@@ -117,7 +117,7 @@ createPayoutApp.post("/", async (req, res) => {
       console.error("Transfer error:", transferError.message);
       
       // If transfer fails, force re-onboarding
-      const baseUrl = `http://localhost:3000`;
+      const baseUrl = process.env.FRONTEND_URL || 'https://offers-5e23d.web.app';
       
       const accountLink = await stripe.accountLinks.create({
         account: userStripeAccountId,
@@ -178,15 +178,18 @@ createCheckoutSessionApp.post("/", async (req, res) => {
     // Create Stripe Checkout Session for one-time payment
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
+      line_items: [
+        {
+          price: planId,
+          quantity: 1,
+        },
+      ],
       mode: "payment",
-      line_items: [{ price: planId, quantity: 1 }],
-      customer: stripeCustomerId,
-      success_url: `http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}&plan=${planId}`,
-      cancel_url: `http://localhost:3000/cancel`,
+      success_url: `${process.env.FRONTEND_URL || 'https://offers-5e23d.web.app'}/success?session_id={CHECKOUT_SESSION_ID}&plan=${planId}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://offers-5e23d.web.app'}/cancel`,
       metadata: {
-        userId: userId,
-        planId: planId
-      }
+        planId: planId,
+      },
     });
 
     res.status(200).json({ success: true, sessionId: session.id });
@@ -443,7 +446,7 @@ setupStripeAccountApp.post("/", async (req, res) => {
         
         // Account exists but needs onboarding
         // Use dynamic URLs based on environment
-        const baseUrl = `http://localhost:3000`;
+        const baseUrl = process.env.FRONTEND_URL || 'https://offers-5e23d.web.app';
         
         console.log('🔗 STRIPE REDIRECT URLs (existing account):', {
           baseUrl,
@@ -489,7 +492,7 @@ setupStripeAccountApp.post("/", async (req, res) => {
 
     // Create account link for onboarding
     // Use dynamic URLs based on environment
-          const baseUrl = `http://localhost:3000`;
+          const baseUrl = process.env.FRONTEND_URL || 'https://offers-5e23d.web.app';
     
     console.log('🔗 STRIPE REDIRECT URLs:', {
       baseUrl,
@@ -569,7 +572,7 @@ manageStripeAccountApp.post("/", async (req, res) => {
     }
 
     // Create account link for managing account details
-    const baseUrl = `http://localhost:3000`;
+    const baseUrl = process.env.FRONTEND_URL || 'https://offers-5e23d.web.app';
     
     console.log('🔗 MANAGE ACCOUNT URLs:', {
       baseUrl,

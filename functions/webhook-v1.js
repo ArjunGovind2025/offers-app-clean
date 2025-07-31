@@ -24,7 +24,7 @@ const webhookHandler = functions.https.onRequest(async (req, res) => {
   console.log("🚀 WEBHOOK CALLED - Method:", req.method);
   console.log("🚀 WEBHOOK CALLED - Body type:", typeof req.body);
   
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || "whsec_p1HWLp8svpK0QBrDN7ycY3Oue1krwVtb";
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
   console.log("🔐 Endpoint secret exists:", !!endpointSecret);
 
   const sig = req.headers["stripe-signature"];

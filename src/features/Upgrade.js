@@ -1,9 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { loadStripe } from "@stripe/stripe-js";
 import { auth } from "../firebase";
 
-// Load your Stripe Publishable Key
-const stripePromise = loadStripe("pk_test_51QaUzSGPA4p9u1zTx16UgrB59rhKJ3YQxbvDiPwExaKUgZxFUP48gENlIgrfzrORe11HVfy63kuXMm6dvHkRUTvd00s327zhO9");
+const stripePromise = loadStripe(process.env.REACT_APP_STRIPE_PUBLIC_KEY);
 
 export default function UpgradePlans() {
   const [loading, setLoading] = useState(false);

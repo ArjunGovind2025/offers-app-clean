@@ -110,10 +110,10 @@ async function checkAccountCapabilities(stripeAccountId) {
 /** Generate an account onboarding link */
 async function createAccountLink(stripeAccountId) {
   try {
-    const baseUrl = process.env.FRONTEND_URL || 
-      (process.env.NODE_ENV === 'production' 
-        ? 'https://your-domain.com' 
-        : `http://localhost:3000`);
+    const baseUrl = process.env.FRONTEND_URL ||
+      (process.env.NODE_ENV === 'production'
+        ? 'https://offers-5e23d.web.app'
+        : 'http://localhost:3000');
       
     const accountLink = await stripe.accountLinks.create({
       account: stripeAccountId,
@@ -340,8 +340,8 @@ router.post("/create-checkout-session", async (req, res) => {
         userId: req.body.userId, // Pass the userId from the request
         planId: req.body.planId, // Pass the planId from the request
       },
-      success_url: `${process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://your-domain.com' : 'http://localhost:3000')}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://your-domain.com' : 'http://localhost:3000')}/cancel`,
+      success_url: `${process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://offers-5e23d.web.app' : 'http://localhost:3000')}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://offers-5e23d.web.app' : 'http://localhost:3000')}/cancel`,
     });
 
     console.log("Checkout session created successfully:", session.id);
